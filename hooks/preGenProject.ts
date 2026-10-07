@@ -1,0 +1,12 @@
+import { logger } from "dkcutter/utils";
+
+const postgresVersion: string = "{{ dkcutter.postgresVersion }}";
+const postgresMajorVersion = Number("{{ dkcutter._postgresMajorVersion }}");
+
+if (
+  postgresVersion !== "latest" &&
+  (postgresMajorVersion < 13 || postgresMajorVersion > 18)
+) {
+  logger.error(`Unsupported postgres version: ${postgresMajorVersion}`);
+  process.exit(1);
+}

@@ -1,0 +1,31 @@
+{
+  "name": "postgres-ssl",
+  "type": "module",
+  "version": "1.0.0",
+  "packageManager": "bun@1.4.2",
+  "description": "This repository contains the logic to build SSL-enabled Postgres images.",
+  "author": "Nicolas Contiero <https://github.com/ncontiero>",
+  "license": "MIT",
+  "scripts": {
+    "generate": "dkcutter .",
+    "generate-matrix": "bun run scripts/cli/generate-matrix.ts",
+    "generate-extensions": "bun run scripts/cli/generate-extensions.ts",
+    "update-versions": "bun run scripts/cli/update-versions.ts",
+    "test": "bun test --isolate",
+    "lint": "eslint .",
+    "lint:fix": "bun run lint --fix",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run --parallel lint typecheck test"
+  },
+  "devDependencies": {
+    "@ncontiero/eslint-config": "8.5.0",
+    "@types/bun": "1.4.2",
+    "@typescript/native": "npm:typescript@7.0.2",
+    "dkcutter": "7.0.1",
+    "eslint": "10.11.0",
+    "typescript": "npm:@typescript/typescript6@6.0.2"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

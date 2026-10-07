@@ -1,0 +1,116 @@
+#!/bin/bash
+
+# Calling this file with `sh` overrides its Bash shebang.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
+set -e
+
+# Usage: bash ./tests/test-docker-extensions.sh <postgres-version> <major-version>
+POSTGRES_VERSION=$1
+MAJOR_VERSION=$2
+
+if [ -z "$POSTGRES_VERSION" ] || [ -z "$MAJOR_VERSION" ]; then
+  echo "Error: POSTGRES_VERSION or MAJOR_VERSION is not specified."
+  echo "Usage: bash ./tests/test-docker-extensions.sh <postgres-version> <major-version>"
+  exit 1
+fi
+
+IMAGE_NAME="postgres-test:${POSTGRES_VERSION}-extensions"
+CONTAINER_NAME="pg-ext-test-${POSTGRES_VERSION}"
+PRIVATE_DOMAIN="postgres.railway.internal"
+PUBLIC_DOMAIN="postgres-test.proxy.rlwy.net"
+
+if ! docker info > /dev/null 2>&1; then
+  echo "ERROR: Docker is not running or the current user cannot access its daemon." >&2
+  exit 1
+fi
+
+if ! docker image inspect "$IMAGE_NAME" > /dev/null 2>&1; then
+  echo "ERROR: Required local image '$IMAGE_NAME' was not found." >&2
+  echo "Build the extension image before running this test." >&2
+  exit 1
+fi
+
+if [ "$MAJOR_VERSION" -lt 18 ]; then
+  CERTS_DIR="/var/lib/postgresql/data/certs"
+  MOUNT_PATH="/var/lib/postgresql/data"
+else
+  CERTS_DIR="/var/lib/postgresql/${MAJOR_VERSION}/docker/certs"
+  MOUNT_PATH="/var/lib/postgresql"
+fi
+
+echo "Starting Postgres Extension container ($CONTAINER_NAME)..."
+docker run -d --name "$CONTAINER_NAME" \
+  -e POSTGRES_PASSWORD=test_password \
+  -e RAILWAY_ENVIRONMENT=true \
+  -e RAILWAY_VOLUME_MOUNT_PATH="$MOUNT_PATH" \
+  -e RAILWAY_PRIVATE_DOMAIN="$PRIVATE_DOMAIN" \
+  -e RAILWAY_TCP_PROXY_DOMAIN="$PUBLIC_DOMAIN" \
+  "$IMAGE_NAME"
+
+trap 'echo "Cleaning up container..."; docker rm -f "$CONTAINER_NAME" > /dev/null' EXIT
+
+echo "Waiting for Postgres to initialize..."
+MAX_RETRIES=20
+RETRY_COUNT=0
+IS_READY=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  if docker exec "$CONTAINER_NAME" pg_isready -U postgres -t 2 > /dev/null 2>&1; then
+    IS_READY=true
+    break
+  fi
+  sleep 2
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  echo -n "."
+done
+echo ""
+
+if [ "$IS_READY" = false ]; then
+  echo "ERROR: Postgres failed to start!"
+  echo "--- Logs ---"
+  docker logs "$CONTAINER_NAME"
+  exit 1
+fi
+
+SERVER_VERSION=$(docker exec "$CONTAINER_NAME" psql \
+  --username postgres \
+  --dbname postgres \
+  --tuples-only \
+  --no-align \
+  -c "SHOW server_version")
+case "$SERVER_VERSION" in
+  "$POSTGRES_VERSION"|"$POSTGRES_VERSION "*) ;;
+  *)
+    echo "ERROR: Expected PostgreSQL $POSTGRES_VERSION, but the extension image contains '$SERVER_VERSION'."
+    exit 1
+    ;;
+esac
+
+echo "Verifying SSL Certificate auto-generation at $CERTS_DIR..."
+if ! docker exec "$CONTAINER_NAME" ls -l "$CERTS_DIR/server.crt" > /dev/null; then
+  echo "ERROR: server.crt was not generated!"
+  exit 1
+fi
+
+echo "Verifying Railway domains in the certificate SANs..."
+for DNS_NAME in localhost "$PRIVATE_DOMAIN" "$PUBLIC_DOMAIN"; do
+  if ! docker exec "$CONTAINER_NAME" openssl x509 \
+    -checkhost "$DNS_NAME" \
+    -noout \
+    -in "$CERTS_DIR/server.crt" > /dev/null; then
+    echo "ERROR: server.crt does not cover '$DNS_NAME'."
+    exit 1
+  fi
+done
+
+echo "Verifying Extension installation (PostGIS)..."
+if ! docker exec "$CONTAINER_NAME" psql -U postgres -c "\dx" | grep -q "postgis"; then
+  echo "ERROR: PostGIS extension was not created!"
+  docker exec "$CONTAINER_NAME" psql -U postgres -c "\dx"
+  exit 1
+fi
+
+echo "All extension tests passed successfully!"
